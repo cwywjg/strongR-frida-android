@@ -92,7 +92,7 @@ jobs:
 
       - name: Setup Android NDK
         id: setup-ndk
-        uses: nttld/setup-ndk@v1.4.2
+        uses: nttld/setup-ndk@v1.5.0
         with:
           ndk-version: r25b
       
@@ -125,23 +125,62 @@ jobs:
           git clone --recurse-submodules --branch "$FRIDA_VERSION" https://github.com/frida/frida
           cd frida
           
+          # 🛠️ 核心修复：改为逐个组件、逐个文件应用补丁，并对 pipe_linjector 实施自动化智能正则拦截与修复
           for path in ../Patchs/strongR-frida/*
           do
             if [ -d "$path" ]; then
               name=$(basename "$path")
-              real=$(realpath "$path")
               if [ -d "subprojects/$name" ]; then
-                echo "Apply patches in $real to frida/subprojects/$name"
+                echo "开始处理组件补丁: subprojects/$name"
                 (
                   cd "subprojects/$name"
-                  # 🔥 核心修复：改用 --3way 智能合并，允许 Git 自动纠正源码行号漂移带来的冲突
-                  if ! git am --3way "../../../Patchs/strongR-frida/$name"/*.patch; then
-                    echo "❌ 补丁应用彻底失败！最新 Frida 源码与该补丁冲突严重，三方合并无法修复。"
-                    echo "👉 正在打印失败的 Diff 细节供分析："
-                    git am --show-current-patch=diff
-                    exit 1
-                  fi
-                ) || exit 1 # 子 Shell 如果报错，直接熔断退出外层循环
+                  for patch_file in $(ls ../../../Patchs/strongR-frida/$name/*.patch | sort); do
+                    echo "[*] 正在应用补丁: $(basename $patch_file)"
+                    if ! git am --3way "$patch_file"; then
+                      # 如果是为人熟知的 pipe_linjector 补丁因冲突失败
+                      if [[ "$patch_file" == *"pipe_linjector"* ]]; then
+                        echo "[!] 补丁 pipe_linjector 发生代码级冲突，启动特征级正则 Fallback 降级方案..."
+                        git am --abort
+                        
+                        # 在当前平台的源码目录下动态模糊检索包含 linjector 特征的文件
+                        target_file=$(grep -rl "linjector-%u" src/linux/ 2>/dev/null | head -n 1)
+                        if [ -n "$target_file" ]; then
+                          echo "[*] 成功定位目标源码文件: $target_file，开始外科手术式正则替换..."
+                          python3 -c '
+import re, sys
+target = "'"$target_file"'"
+with open(target, "r", encoding="utf-8") as f:
+    text = f.read()
+# 弹性匹配规则，完美兼容各种空格、换行变动
+pattern = r"\"%s/linjector-%u\"\s*,\s*self\s*->\s*temp_path\s*,\s*self\s*->\s*id"
+replacement = "\"%s/%p%u\", self->temp_path, self, self->id"
+modified, count = re.subn(pattern, replacement, text)
+if count == 0:
+    # 更加宽松的兜底匹配方案
+    pattern2 = r"\"%s/linjector-%u\"\s*,\s*([^,]+)\s*,\s*([^)]+)"
+    modified, count = re.subn(pattern2, r"\"%s/%p%u\", \1, self, \2", text)
+if count > 0:
+    with open(target, "w", encoding="utf-8") as f:
+        f.write(modified)
+    print("✅ 源码去特征正则替换成功！")
+else:
+    print("❌ 未能在源码中匹配到 linjector 特征结构，请检查上游重大重构")
+    sys.exit(1)
+'
+                          git add "$target_file"
+                          git commit -m "strongR-frida: pipe_linjector (fallback via python regex)"
+                        else
+                          echo "❌ 严重错误: 未能在 src/linux/ 找到包含 linjector-%u 的源码文件"
+                          exit 1
+                        fi
+                      else
+                        echo "❌ 补丁 $(basename $patch_file) 核心冲突，三方合并无法解决。"
+                        git am --show-current-patch=diff
+                        exit 1
+                      fi
+                    fi
+                  done
+                ) || exit 1
               else
                 echo "[!] 警告: 找不到对应的目录 frida/subprojects/$name，跳过此补丁。"
               fi
