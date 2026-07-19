@@ -5,10 +5,10 @@ on:
     - cron: "0 9/12 * * *"
   workflow_dispatch:
 
-# ======= 🔥 核心修改 1：把写权限提升到全局，让所有 jobs 都拥有发布与上传特权 🔥 =======
+# ======= 🔥 核心升级 1：全局赋予最高的读写及发布特权 🔥 =======
 permissions:
   contents: write
-# ==============================================================================
+# =========================================================
 
 jobs: 
   check_version:
@@ -19,7 +19,7 @@ jobs:
     steps:
       - name: Pull Frida Latest Release
         id: pullFridaLatestRelease
-        uses: actions/github-script@v7 # 🔥 升级到 v7，消除 Node 弃用报错
+        uses: actions/github-script@v7  # 🔥 升级到 v7，消除 Node 弃用报错
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
@@ -31,17 +31,19 @@ jobs:
               data: { tag_name: ver }
             } = releaseResponse;
             core.setOutput('FRIDA_VERSION', ver);
+            
       - name: Check release version
         id: checkReleaseVersion
-        uses: actions/github-script@v7 # 🔥 升级到 v7
+        uses: actions/github-script@v7  # 🔥 升级到 v7
         with:
           github-token: ${{secrets.GITHUB_TOKEN}}
           script: |
             try {
               const releaseVersion = '${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}'
+              // 🔥 核心升级 2：直接利用 API context 自动获取当前仓库账号和项目名，无需任何 Secret！
               const releaseResponse = await github.rest.repos.getReleaseByTag({
-                owner: '${{ secrets.GIT_OWNER }}',
-                repo: '${{ secrets.GIT_REPO }}',
+                owner: context.repo.owner,
+                repo: context.repo.repo,
                 tag: releaseVersion
               });
               const {
@@ -54,7 +56,7 @@ jobs:
                   core.setOutput('ALREADY_RELEASE', '0');
               }
             } catch (e) {
-              if(e.status === 404 || e.message == 'Not Found'){
+              if(e.status === 404 || e.message.includes('Not Found')){
                 core.setOutput('ALREADY_RELEASE', '0');
               }
               else{
@@ -68,7 +70,7 @@ jobs:
     if: needs.check_version.outputs.ALREADY_RELEASE == '0'
 
     steps:
-      # ======= 🔥 核心修改 2：替换被淘汰的 create-release，改用最新的标准发布动作 🔥 =======
+      # ======= 🔥 核心升级 3：替换淘汰的 create-release，改用现代标准发布组件 🔥 =======
       - uses: softprops/action-gh-release@v2
         id: createRelease
         name: Create Runner Release
@@ -85,13 +87,12 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    
     - uses: actions/setup-node@v4
       with:
         node-version: 18
 
-    - uses: fusion-engineering/setup-git-credentials@v2
-      with:
-        credentials: ${{secrets.GIT_CREDENTIALS}}
+    # 🔥 核心升级 4：已彻底删掉报错的 fusion-engineering/setup-git-credentials！无需任何凭证！
 
     - name: set up JDK 17
       uses: actions/setup-java@v4
@@ -119,9 +120,16 @@ jobs:
     - name: build frida for Android
       shell: bash
       run: |
-        git config --global user.name "${{ secrets.GIT_NAME }}"
-        git config --global user.email "${{ secrets.GIT_EMAIL }}"
-        git clone ${{ secrets.PATCH_REPO }}
+        # 🔥 核心升级 5：自动使用 GitHub Action 默认机器人身份提交，无需配置私密姓名邮箱
+        git config --global user.name "${{ github.actor }}"
+        git config --global user.email "${{ github.actor }}@users.noreply.github.com"
+        
+        # 🔥 核心升级 6：智能判断补丁库。如果本地没有 Patchs，自动拉取公开库，彻底摆脱 PATCH_REPO 依赖！
+        if [ ! -d "Patchs" ]; then
+          echo "[*] 未检测到本地 Patchs 目录，正在从公开源拉取去特征补丁..."
+          git clone https://github.com/hluwa/Patchs.git Patchs
+        fi
+        
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
         git clone --recurse-submodules https://github.com/frida/frida
         cd frida
@@ -150,15 +158,16 @@ jobs:
 
     - name: Check release version
       id: checkReleaseVersion
-      uses: actions/github-script@v7 # 🔥 升级到 v7
+      uses: actions/github-script@v7  # 🔥 升级到 v7
       with:
         github-token: ${{secrets.GITHUB_TOKEN}}
         script: |
           try {
             const releaseVersion = '${{ needs.check_version.outputs.FRIDA_VERSION }}'
+            // 🔥 直接利用 API context 自动获取当前账号和仓库
             const releaseResponse = await github.rest.repos.getReleaseByTag({
-              owner: '${{ secrets.GIT_OWNER }}',
-              repo: '${{ secrets.GIT_REPO }}',
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               tag: releaseVersion
             })
             const {
@@ -171,10 +180,10 @@ jobs:
           } catch (e) {
             core.setFailed(e.message);
           }
+          
     - name: package build result for Android
       shell: bash
       run: |
-        
         gzip build-android-arm/subprojects/frida-core/server/frida-server
         gzip build-android-arm64/subprojects/frida-core/server/frida-server
         gzip build-android-x86/subprojects/frida-core/server/frida-server
@@ -189,7 +198,6 @@ jobs:
         gzip build-android-arm64/subprojects/frida-core/lib/gadget/frida-gadget.so
         gzip build-android-x86/subprojects/frida-core/lib/gadget/frida-gadget.so
         gzip build-android-x86_64/subprojects/frida-core/lib/gadget/frida-gadget.so
-        
         
     - name: Upload android arm frida-server for strongR-frida
       uses: actions/upload-release-asset@v1.0.2
