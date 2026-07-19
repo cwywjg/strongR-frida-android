@@ -19,7 +19,7 @@ jobs:
     steps:
       - name: Pull Frida Latest Release
         id: pullFridaLatestRelease
-        uses: actions/github-script@v7 # 🔥 升级到 v7，消除 Node 弃用报错
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -32,13 +32,12 @@ jobs:
             
       - name: Check Release Version
         id: checkReleaseVersion
-        uses: actions/github-script@v7 # 🔥 升级到 v7
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             try {
               const releaseVersion = '${{ steps.pullFridaLatestRelease.outputs.FRIDA_VERSION }}';
-              // 🔥 核心升级 2：直接利用 API context 自动获取当前仓库账号和项目名，无需任何 Secret！
               const releaseResponse = await github.rest.repos.getReleaseByTag({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -63,7 +62,6 @@ jobs:
     runs-on: ubuntu-22.04
     if: needs.check_version.outputs.ALREADY_RELEASE == '0'
     steps:
-      # ======= 🔥 核心升级 3：替换淘汰的 create-release，改用现代标准发布组件 🔥 =======
       - uses: softprops/action-gh-release@v2
         id: createRelease
         name: Create Runner Release
@@ -86,8 +84,6 @@ jobs:
         with:
           node-version: 18
 
-      # 🔥 核心升级 4：已彻底删掉报错的 fusion-engineering/setup-git-credentials！无需任何凭证！
-
       - name: set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -109,28 +105,26 @@ jobs:
         run: |
           sudo apt-get update && DEBIAN_FRONTEND=noninteractive sudo apt-get install build-essential tree ninja-build gcc-multilib g++-multilib lib32stdc++-9-dev flex bison ruby ruby-dev python3-requests python3-setuptools python3-dev python3-pip libc6-dev libc6-dev-i386 -y
           sudo gem install fpm -v 1.11.0 --no-document
-          python3 -m pip install lief graphlib-backport
+          python3 -m pip install lief
 
       - name: build frida for Android
         shell: bash
         run: |
-          # 🔥 核心升级 5：自动使用 GitHub Action 默认机器人身份提交，无需配置私密姓名邮箱
           git config --global user.name "${{ github.actor }}"
           git config --global user.email "${{ github.actor }}@users.noreply.github.com"
           
-          # 🔥 核心升级 6：智能判断补丁库。如果本地没有 Patchs，自动拉取公开库，彻底摆脱 PATCH_REPO 依赖！
           if [ ! -d "Patchs" ]; then
             echo "[*] 未检测到本地 Patchs 目录，正在从公开源拉取去特征补丁..."
             git clone https://github.com/hluwa/Patchs.git Patchs
           fi
           
           export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
+          FRIDA_VERSION="${{ needs.check_version.outputs.FRIDA_VERSION }}"
           
-          # 💡 联动动态版本：将原本固定的 16.2.1 变更为动态获取的最新版本号
-          git clone --recurse-submodules --branch ${{ needs.check_version.outputs.FRIDA_VERSION }} https://github.com/frida/frida
+          echo "[*] 正在克隆目标 Frida 版本: $FRIDA_VERSION"
+          git clone --recurse-submodules --branch "$FRIDA_VERSION" https://github.com/frida/frida
           cd frida
           
-          # 🛠️ 核心修复：使用 () 建立子 Shell 隔离环境，防止相对路径打乱导致的 cd 报错
           for path in ../Patchs/strongR-frida/*
           do
             if [ -d "$path" ]; then
@@ -140,8 +134,14 @@ jobs:
                 echo "Apply patches in $real to frida/subprojects/$name"
                 (
                   cd "subprojects/$name"
-                  git am "../../../Patchs/strongR-frida/$name"/*.patch
-                )
+                  # 🔥 核心修复：改用 --3way 智能合并，允许 Git 自动纠正源码行号漂移带来的冲突
+                  if ! git am --3way "../../../Patchs/strongR-frida/$name"/*.patch; then
+                    echo "❌ 补丁应用彻底失败！最新 Frida 源码与该补丁冲突严重，三方合并无法修复。"
+                    echo "👉 正在打印失败的 Diff 细节供分析："
+                    git am --show-current-patch=diff
+                    exit 1
+                  fi
+                ) || exit 1 # 子 Shell 如果报错，直接熔断退出外层循环
               else
                 echo "[!] 警告: 找不到对应的目录 frida/subprojects/$name，跳过此补丁。"
               fi
@@ -277,7 +277,7 @@ jobs:
         with:
           upload_url: '${{ steps.checkReleaseVersion.outputs.upload_url }}'
           asset_path: '${{ github.workspace }}/build-android-x86_64/subprojects/frida-core/inject/frida-inject.gz'
-          asset_name: 'hluda-inject-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-x86_64.gz'
+          asset_name: 'hluda-inject-${{ needs.check_version.outputs.FRIDA_VERSION }}-android-arm-x86_64.gz'
           asset_content_type: application/octet-stream
       
       - name: Upload android arm frida-gadget for hluda
