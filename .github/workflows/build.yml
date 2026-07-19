@@ -131,7 +131,7 @@ jobs:
         fi
         
         export ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}
-        git clone --recurse-submodules --branch 16.1.4 https://github.com/frida/frida
+        git clone --recurse-submodules --branch 16.2.1 https://github.com/frida/frida
         cd frida
         for path in ../Patchs/strongR-frida/*
         do
